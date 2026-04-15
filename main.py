@@ -13,13 +13,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-CHANNEL_SECRET  = os.getenv("aef87a8b12d0c955abcd8b5f1b599983", "")
-ACCESS_TOKEN    = os.getenv("3NO//yPmzUfMweyrW/ev/FFwWT5q6+f4tjhFRoGhX1PG+cLDzj0AHmANMBw0mOGWyjmTKUiZxvv/ItYzT/QZ6cHAxkuC4sPuLtuEPRs6QUWp/BcVvD+8aHX8gm5i2t8+GUWNw71NZKtPjIREdWG/BAdB04t89/1O/w1cDnyilFU=", "")
-GEMINI_API_KEY  = os.getenv("AIzaSyCxHXwI2h-ubqXky85YHn-WYWCKbth6_9k", "")
+CHANNEL_SECRET = os.getenv("aef87a8b12d0c955abcd8b5f1b599983", "")
+ACCESS_TOKEN   = os.getenv("3NO//yPmzUfMweyrW/ev/FFwWT5q6+f4tjhFRoGhX1PG+cLDzj0AHmANMBw0mOGWyjmTKUiZxvv/ItYzT/QZ6cHAxkuC4sPuLtuEPRs6QUWp/BcVvD+8aHX8gm5i2t8+GUWNw71NZKtPjIREdWG/BAdB04t89/1O/w1cDnyilFU=", "")
+GEMINI_API_KEY = os.getenv("AIzaSyCxHXwI2h-ubqXky85YHn-WYWCKbth6_9k", "")
 
 SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบคำถามเกี่ยวกับการผลิต ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
-
-BOT_KEYWORD = "bot"
+BOT_KEYWORD = "บอท"
 
 
 def verify_signature(body: bytes, signature: str) -> bool:
@@ -29,6 +28,14 @@ def verify_signature(body: bytes, signature: str) -> bool:
         hashlib.sha256
     ).digest()
     expected = base64.b64encode(digest).decode("utf-8")
+
+    # Debug: แสดงค่าจริงที่คำนวณได้ vs ที่ LINE ส่งมา
+    logger.info(f"SECRET length : {len(CHANNEL_SECRET)}")
+    logger.info(f"SECRET preview: '{CHANNEL_SECRET[:6]}...{CHANNEL_SECRET[-4:]}'")
+    logger.info(f"Expected sig  : {expected[:20]}...")
+    logger.info(f"Received sig  : {signature[:20]}...")
+    logger.info(f"Match         : {hmac.compare_digest(expected, signature)}")
+
     return hmac.compare_digest(expected, signature)
 
 
@@ -60,7 +67,7 @@ async def reply_line(reply_token: str, text: str):
     }
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(url, headers=headers, json=body)
-        logger.info(f"reply_line status: {r.status_code} body: {r.text}")
+        logger.info(f"reply_line status: {r.status_code}")
 
 
 @app.post("/callback")
@@ -73,45 +80,39 @@ async def callback(request: Request):
         return Response(content="ok", status_code=200)
 
     data = json.loads(body)
-    logger.info(f"Received events: {json.dumps(data, ensure_ascii=False)}")
 
     for event in data.get("events", []):
         event_type  = event.get("type")
         reply_token = event.get("replyToken", "")
         source_type = event.get("source", {}).get("type", "")
 
-        logger.info(f"event_type={event_type} source_type={source_type} reply_token={bool(reply_token)}")
+        logger.info(f"event_type={event_type} source_type={source_type}")
 
         if event_type == "join":
-            await reply_line(reply_token, f"สวัสดีครับ! พิมพ์ {BOT_KEYWORD} นำหน้าเพื่อถามผมได้เลยครับ")
+            await reply_line(reply_token, f"สวัสดีครับ! พิมพ์ '{BOT_KEYWORD}' นำหน้าเพื่อถามผมได้เลยครับ")
             continue
 
         if event_type != "message":
-            logger.info(f"Skipped: event_type={event_type}")
             continue
         if event["message"]["type"] != "text":
-            logger.info(f"Skipped: message type={event['message']['type']}")
             continue
         if not reply_token:
-            logger.info("Skipped: no reply_token")
             continue
 
         user_text = event["message"]["text"].strip()
-        logger.info(f"user_text='{user_text}' source_type={source_type}")
+        logger.info(f"user_text='{user_text}'")
 
         if source_type == "group":
             if not user_text.lower().startswith(BOT_KEYWORD.lower()):
-                logger.info(f"Skipped: group msg without keyword '{BOT_KEYWORD}'")
+                logger.info(f"Skipped: no keyword")
                 continue
             user_text = user_text[len(BOT_KEYWORD):].strip()
             if not user_text:
-                await reply_line(reply_token, f"มีอะไรให้ช่วยครับ? พิมพ์ {BOT_KEYWORD} ตามด้วยคำถาม")
+                await reply_line(reply_token, f"มีอะไรให้ช่วยครับ? พิมพ์ '{BOT_KEYWORD}' ตามด้วยคำถาม")
                 continue
 
         try:
-            logger.info(f"Asking Gemini: '{user_text}'")
             answer = await ask_gemini(user_text)
-            logger.info(f"Gemini answered: '{answer[:50]}...'")
         except Exception as e:
             logger.error(f"Gemini error: {e}")
             answer = f"ขออภัย เกิดข้อผิดพลาด: {str(e)}"
