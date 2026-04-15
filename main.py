@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-LINE_CHANNEL_SECRET = os.getenv("417f00992d475221041236dbc2dc9a50", "")
-ACCESS_TOKEN   = os.getenv("tOn5aXwEDX99WB7ywlck3f7zfTrx8ZvE7Aqg0fFPHE6QFyj0Nv3e9Icg+5UAcMJiyjmTKUiZxvv/ItYzT/QZ6cHAxkuC4sPuLtuEPRs6QUXNKC4HdOMjeoK4kGZPtJ6uei4WuKblmNrjtqudvBpmkgdB04t89/1O/w1cDnyilFU=", "")
-GEMINI_API_KEY = os.getenv("AIzaSyCxHXwI2h-ubqXky85YHn-WYWCKbth6_9k", "")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+ACCESS_TOKEN   = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบคำถามเกี่ยวกับการผลิต ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
 BOT_KEYWORD = "บอท"
