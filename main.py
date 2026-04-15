@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-LINE_CHANNEL_SECRET = os.getenv("aef87a8b12d0c955abcd8b5f1b599983", "")
+LINE_LINE_CHANNEL_SECRET = os.getenv("aef87a8b12d0c955abcd8b5f1b599983", "")
 ACCESS_TOKEN   = os.getenv("3NO//yPmzUfMweyrW/ev/FFwWT5q6+f4tjhFRoGhX1PG+cLDzj0AHmANMBw0mOGWyjmTKUiZxvv/ItYzT/QZ6cHAxkuC4sPuLtuEPRs6QUWp/BcVvD+8aHX8gm5i2t8+GUWNw71NZKtPjIREdWG/BAdB04t89/1O/w1cDnyilFU=", "")
 GEMINI_API_KEY = os.getenv("AIzaSyCxHXwI2h-ubqXky85YHn-WYWCKbth6_9k", "")
 
@@ -23,15 +23,15 @@ BOT_KEYWORD = "บอท"
 
 def verify_signature(body: bytes, signature: str) -> bool:
     digest = hmac.new(
-        CHANNEL_SECRET.encode("utf-8"),
+        LINE_CHANNEL_SECRET.encode("utf-8"),
         body,
         hashlib.sha256
     ).digest()
     expected = base64.b64encode(digest).decode("utf-8")
 
     # Debug: แสดงค่าจริงที่คำนวณได้ vs ที่ LINE ส่งมา
-    logger.info(f"SECRET length : {len(CHANNEL_SECRET)}")
-    logger.info(f"SECRET preview: '{CHANNEL_SECRET[:6]}...{CHANNEL_SECRET[-4:]}'")
+    logger.info(f"SECRET length : {len(LINE_CHANNEL_SECRET)}")
+    logger.info(f"SECRET preview: '{LINE_CHANNEL_SECRET[:6]}...{LINE_CHANNEL_SECRET[-4:]}'")
     logger.info(f"Expected sig  : {expected[:20]}...")
     logger.info(f"Received sig  : {signature[:20]}...")
     logger.info(f"Match         : {hmac.compare_digest(expected, signature)}")
