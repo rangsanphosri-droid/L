@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-LINE_CHANNEL_SECRET = os.getenv("aef87a8b12d0c955abcd8b5f1b599983", "")
-ACCESS_TOKEN   = os.getenv("3NO//yPmzUfMweyrW/ev/FFwWT5q6+f4tjhFRoGhX1PG+cLDzj0AHmANMBw0mOGWyjmTKUiZxvv/ItYzT/QZ6cHAxkuC4sPuLtuEPRs6QUWp/BcVvD+8aHX8gm5i2t8+GUWNw71NZKtPjIREdWG/BAdB04t89/1O/w1cDnyilFU=", "")
+LINE_CHANNEL_SECRET = os.getenv("417f00992d475221041236dbc2dc9a50", "")
+ACCESS_TOKEN   = os.getenv("tOn5aXwEDX99WB7ywlck3f7zfTrx8ZvE7Aqg0fFPHE6QFyj0Nv3e9Icg+5UAcMJiyjmTKUiZxvv/ItYzT/QZ6cHAxkuC4sPuLtuEPRs6QUXNKC4HdOMjeoK4kGZPtJ6uei4WuKblmNrjtqudvBpmkgdB04t89/1O/w1cDnyilFU=", "")
 GEMINI_API_KEY = os.getenv("AIzaSyCxHXwI2h-ubqXky85YHn-WYWCKbth6_9k", "")
 
 SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบคำถามเกี่ยวกับการผลิต ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
