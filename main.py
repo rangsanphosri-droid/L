@@ -115,10 +115,7 @@ async def callback(request: Request):
             answer = await ask_gemini(user_text)
         except Exception as e:
             logger.error(f"Gemini error: {e}")
-            if "429" in str(e):
-        answer = "ขออภัยครับ ระบบ AI ยุ่งอยู่ รอสักครู่แล้วลองใหม่นะครับ"
-    else:
-        answer = f"ขออภัย เกิดข้อผิดพลาด: {str(e)}"
+                    answer = f"ขออภัย เกิดข้อผิดพลาด: {str(e)}"
 
         await reply_line(reply_token, answer)
 
