@@ -18,7 +18,7 @@ ACCESS_TOKEN    = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
-BOT_KEYWORD = "บอท"
+BOT_KEYWORD = "ai"
 
 
 def verify_signature(body: bytes, signature: str) -> bool:
