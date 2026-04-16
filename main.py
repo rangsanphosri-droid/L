@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 ACCESS_TOKEN   = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
@@ -23,19 +23,11 @@ BOT_KEYWORD = "บอท"
 
 def verify_signature(body: bytes, signature: str) -> bool:
     digest = hmac.new(
-        LINE_CHANNEL_SECRET.encode("utf-8"),
+        CHANNEL_SECRET.encode("utf-8"),
         body,
         hashlib.sha256
     ).digest()
     expected = base64.b64encode(digest).decode("utf-8")
-
-    # Debug: แสดงค่าจริงที่คำนวณได้ vs ที่ LINE ส่งมา
-    logger.info(f"SECRET length : {len(LINE_CHANNEL_SECRET)}")
-    logger.info(f"SECRET preview: '{LINE_CHANNEL_SECRET[:6]}...{LINE_CHANNEL_SECRET[-4:]}'")
-    logger.info(f"Expected sig  : {expected[:20]}...")
-    logger.info(f"Received sig  : {signature[:20]}...")
-    logger.info(f"Match         : {hmac.compare_digest(expected, signature)}")
-
     return hmac.compare_digest(expected, signature)
 
 
@@ -104,7 +96,7 @@ async def callback(request: Request):
 
         if source_type == "group":
             if not user_text.lower().startswith(BOT_KEYWORD.lower()):
-                logger.info(f"Skipped: no keyword")
+                logger.info("Skipped: no keyword")
                 continue
             user_text = user_text[len(BOT_KEYWORD):].strip()
             if not user_text:
@@ -115,7 +107,10 @@ async def callback(request: Request):
             answer = await ask_gemini(user_text)
         except Exception as e:
             logger.error(f"Gemini error: {e}")
-                    answer = f"ขออภัย เกิดข้อผิดพลาด: {str(e)}"
+            if "429" in str(e):
+                answer = "ขออภัยครับ ระบบ AI ยุ่งอยู่ รอสักครู่แล้วลองใหม่นะครับ"
+            else:
+                answer = f"ขออภัย เกิดข้อผิดพลาด: {str(e)}"
 
         await reply_line(reply_token, answer)
 
