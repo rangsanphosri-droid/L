@@ -17,7 +17,7 @@ CHANNEL_SECRET  = os.getenv("LINE_CHANNEL_SECRET", "")
 ACCESS_TOKEN    = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
-SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบคำถามเกี่ยวกับการผลิต ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
+SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
 BOT_KEYWORD = "บอท"
 
 
