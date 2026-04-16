@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
-ACCESS_TOKEN   = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+CHANNEL_SECRET  = os.getenv("LINE_CHANNEL_SECRET", "")
+ACCESS_TOKEN    = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบคำถามเกี่ยวกับการผลิต ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
 BOT_KEYWORD = "บอท"
@@ -31,20 +31,26 @@ def verify_signature(body: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-async def ask_gemini(user_message: str) -> str:
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    )
+async def ask_claude(user_message: str) -> str:
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
     payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [{"parts": [{"text": user_message}]}]
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 512,
+        "system": SYSTEM_PROMPT,
+        "messages": [
+            {"role": "user", "content": user_message}
+        ]
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, json=payload)
+        resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        return data["content"][0]["text"]
 
 
 async def reply_line(reply_token: str, text: str):
@@ -104,13 +110,10 @@ async def callback(request: Request):
                 continue
 
         try:
-            answer = await ask_gemini(user_text)
+            answer = await ask_claude(user_text)
         except Exception as e:
-            logger.error(f"Gemini error: {e}")
-            if "429" in str(e):
-                answer = "ขออภัยครับ ระบบ AI ยุ่งอยู่ รอสักครู่แล้วลองใหม่นะครับ"
-            else:
-                answer = f"ขออภัย เกิดข้อผิดพลาด: {str(e)}"
+            logger.error(f"Claude error: {e}")
+            answer = f"ขออภัย เกิดข้อผิดพลาด: {str(e)}"
 
         await reply_line(reply_token, answer)
 
