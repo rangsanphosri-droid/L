@@ -4,17 +4,21 @@ import hmac
 import base64
 import json
 import logging
+import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from collections import defaultdict
 from zoneinfo import ZoneInfo
 
 import httpx
+import requests as req_lib
 from fastapi import FastAPI, Request, Response
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request as GRequest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,10 +28,12 @@ TZ = ZoneInfo("Asia/Bangkok")
 CHANNEL_SECRET    = os.getenv("LINE_CHANNEL_SECRET", "")
 ACCESS_TOKEN      = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+GOOGLE_SA_JSON    = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+CALENDAR_ID       = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 
-SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
-BOT_KEYWORD   = "บอท"
-FILE_DIR      = Path("./files")
+SYSTEM_PROMPT  = "คุณคือ AI assistant ประจำโรงงาน ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
+BOT_KEYWORD    = "บอท"
+FILE_DIR       = Path("./files")
 REMINDERS_FILE = Path("./reminders.json")
 
 CONTENT_EXT = {
@@ -45,10 +51,7 @@ scheduler = AsyncIOScheduler(timezone=TZ)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # โหลด reminder ที่ค้างไว้ (กรณี restart)
     load_saved_reminders()
-
-    # สรุปไฟล์รายวัน 17:00 จ-ส
     scheduler.add_job(
         send_daily_summary,
         CronTrigger(day_of_week="mon-sat", hour=17, minute=0, timezone=TZ),
@@ -78,33 +81,82 @@ def safe_folder_name(name: str) -> str:
     return "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in name).strip()
 
 
+# ─────────────────────── Google Calendar ────────────────────
+
+def _get_google_token() -> str | None:
+    """ดึง Access Token จาก Service Account (sync — รันใน executor)"""
+    if not GOOGLE_SA_JSON:
+        return None
+    try:
+        info  = json.loads(GOOGLE_SA_JSON)
+        creds = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+        creds.refresh(GRequest(session=req_lib.Session()))
+        return creds.token
+    except Exception as e:
+        logger.error(f"Google token error: {e}")
+        return None
+
+
+async def create_calendar_event(summary: str, run_at: datetime) -> bool:
+    """สร้าง Event ใน Google Calendar"""
+    token = await asyncio.get_event_loop().run_in_executor(None, _get_google_token)
+    if not token:
+        logger.warning("Google Calendar ไม่ได้ตั้งค่า หรือ token error")
+        return False
+
+    end_at = run_at + timedelta(minutes=30)
+    event  = {
+        "summary": f"🔔 {summary}",
+        "start":   {"dateTime": run_at.isoformat(), "timeZone": "Asia/Bangkok"},
+        "end":     {"dateTime": end_at.isoformat(), "timeZone": "Asia/Bangkok"},
+        "reminders": {
+            "useDefault": False,
+            "overrides":  [{"method": "popup", "minutes": 10}],
+        },
+    }
+    url     = f"https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(url, headers=headers, json=event)
+        if r.status_code in (200, 201):
+            logger.info(f"Calendar event created: {summary} at {run_at}")
+            return True
+        else:
+            logger.error(f"Calendar error {r.status_code}: {r.text}")
+            return False
+
+
 # ─────────────────────── Line API ───────────────────────────
 
 async def get_group_name(group_id: str) -> str:
     if group_id in group_name_cache:
         return group_name_cache[group_id]
-    url = f"https://api.line.me/v2/bot/group/{group_id}/summary"
+    url     = f"https://api.line.me/v2/bot/group/{group_id}/summary"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(url, headers=headers)
+        r    = await client.get(url, headers=headers)
         name = r.json().get("groupName", group_id) if r.status_code == 200 else group_id
     group_name_cache[group_id] = name
     return name
 
 
 async def reply_line(reply_token: str, text: str):
-    url = "https://api.line.me/v2/bot/message/reply"
+    url     = "https://api.line.me/v2/bot/message/reply"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
-    body = {"replyToken": reply_token, "messages": [{"type": "text", "text": text}]}
+    body    = {"replyToken": reply_token, "messages": [{"type": "text", "text": text}]}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(url, headers=headers, json=body)
         logger.info(f"reply_line status: {r.status_code}")
 
 
 async def push_line(target_id: str, text: str):
-    url = "https://api.line.me/v2/bot/message/push"
+    url     = "https://api.line.me/v2/bot/message/push"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
-    body = {"to": target_id, "messages": [{"type": "text", "text": text}]}
+    body    = {"to": target_id, "messages": [{"type": "text", "text": text}]}
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(url, headers=headers, json=body)
         logger.info(f"push_line status: {r.status_code}")
@@ -113,17 +165,17 @@ async def push_line(target_id: str, text: str):
 # ─────────────────────── Claude ─────────────────────────────
 
 async def ask_claude(user_message: str, system: str = SYSTEM_PROMPT) -> str:
-    url = "https://api.anthropic.com/v1/messages"
+    url     = "https://api.anthropic.com/v1/messages"
     headers = {
-        "x-api-key": ANTHROPIC_API_KEY,
+        "x-api-key":         ANTHROPIC_API_KEY,
         "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
+        "content-type":      "application/json",
     }
     payload = {
-        "model": "claude-haiku-4-5-20251001",
+        "model":      "claude-haiku-4-5-20251001",
         "max_tokens": 512,
-        "system": system,
-        "messages": [{"role": "user", "content": user_message}],
+        "system":     system,
+        "messages":   [{"role": "user", "content": user_message}],
     }
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(url, headers=headers, json=payload)
@@ -134,17 +186,15 @@ async def ask_claude(user_message: str, system: str = SYSTEM_PROMPT) -> str:
 # ─────────────────────── Reminder ───────────────────────────
 
 def save_reminders_to_file(reminders: list[dict]):
-    """บันทึก reminder ลงไฟล์ เพื่อกันหาย เมื่อ restart"""
     REMINDERS_FILE.write_text(json.dumps(reminders, ensure_ascii=False, indent=2))
 
 
 def load_saved_reminders():
-    """โหลด reminder ที่ยังไม่ถึงเวลาจากไฟล์ กลับเข้า scheduler"""
     if not REMINDERS_FILE.exists():
         return
     try:
         reminders = json.loads(REMINDERS_FILE.read_text())
-        now = datetime.now(TZ)
+        now  = datetime.now(TZ)
         kept = []
         for r in reminders:
             run_at = datetime.fromisoformat(r["run_at"])
@@ -168,10 +218,7 @@ def schedule_reminder_job(job_id: str, target_id: str, text: str, run_at: dateti
 
 
 async def send_reminder(job_id: str, target_id: str, text: str):
-    """ส่งข้อความเตือน และลบออกจากไฟล์"""
     await push_line(target_id, f"🔔 เตือนความจำ\n{text}")
-
-    # ลบออกจากไฟล์
     if REMINDERS_FILE.exists():
         reminders = json.loads(REMINDERS_FILE.read_text())
         reminders = [r for r in reminders if r["job_id"] != job_id]
@@ -179,12 +226,7 @@ async def send_reminder(job_id: str, target_id: str, text: str):
 
 
 async def parse_and_set_reminder(user_text: str, target_id: str, reply_token: str):
-    """
-    ให้ Claude แปลงข้อความภาษาธรรมชาติ → วันเวลา + ข้อความเตือน
-    แล้ว schedule job
-    """
     now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
-
     parse_system = f"""คุณช่วยแปลงข้อความเตือนความจำภาษาไทยให้เป็น JSON
 ตอนนี้คือวันที่และเวลา: {now_str} (Asia/Bangkok)
 ตอบเฉพาะ JSON เท่านั้น ห้ามมีข้อความอื่น รูปแบบ:
@@ -195,18 +237,18 @@ async def parse_and_set_reminder(user_text: str, target_id: str, reply_token: st
 ถ้าไม่สามารถแยกเวลาได้ ให้ตอบ: {{"error": "ไม่เข้าใจเวลา"}}"""
 
     raw = await ask_claude(user_text, system=parse_system)
-
-    # ดึง JSON ออกจากคำตอบ
     try:
         start = raw.find("{")
         end   = raw.rfind("}") + 1
         data  = json.loads(raw[start:end])
     except Exception:
-        await reply_line(reply_token, "❌ ไม่เข้าใจรูปแบบการเตือนครับ\nลองพิมพ์ใหม่ เช่น:\nบอท เตือน ประชุม พรุ่งนี้ 09:00")
+        await reply_line(reply_token,
+            "❌ ไม่เข้าใจรูปแบบการเตือนครับ\nลองพิมพ์ใหม่ เช่น:\nบอท เตือน ประชุม พรุ่งนี้ 09:00")
         return
 
     if "error" in data:
-        await reply_line(reply_token, f"❌ {data['error']}\nตัวอย่าง: บอท เตือน ส่งรายงาน วันศุกร์ 16:00")
+        await reply_line(reply_token,
+            f"❌ {data['error']}\nตัวอย่าง: บอท เตือน ส่งรายงาน วันศุกร์ 16:00")
         return
 
     reminder_text = data.get("reminder_text", user_text)
@@ -215,22 +257,20 @@ async def parse_and_set_reminder(user_text: str, target_id: str, reply_token: st
     try:
         run_at = datetime.strptime(dt_str, "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
     except Exception:
-        await reply_line(reply_token, "❌ แปลงวันเวลาไม่ได้ครับ ลองระบุให้ชัดขึ้น เช่น 'พรุ่งนี้ 09:00' หรือ '20/04 14:30'")
+        await reply_line(reply_token,
+            "❌ แปลงวันเวลาไม่ได้ครับ ลองระบุให้ชัดขึ้น เช่น 'พรุ่งนี้ 09:00' หรือ '20/04 14:30'")
         return
 
     if run_at <= datetime.now(TZ):
         await reply_line(reply_token, "❌ เวลาที่ระบุผ่านไปแล้วครับ กรุณาระบุเวลาในอนาคต")
         return
 
-    # สร้าง job
+    # Schedule job
     job_id = f"remind_{target_id}_{run_at.strftime('%Y%m%d%H%M%S')}"
     schedule_reminder_job(job_id, target_id, reminder_text, run_at)
 
-    # บันทึกลงไฟล์กันหาย
-    if REMINDERS_FILE.exists():
-        existing = json.loads(REMINDERS_FILE.read_text())
-    else:
-        existing = []
+    # บันทึกลงไฟล์
+    existing = json.loads(REMINDERS_FILE.read_text()) if REMINDERS_FILE.exists() else []
     existing.append({
         "job_id":    job_id,
         "target_id": target_id,
@@ -239,8 +279,13 @@ async def parse_and_set_reminder(user_text: str, target_id: str, reply_token: st
     })
     save_reminders_to_file(existing)
 
+    # สร้าง Google Calendar Event
+    cal_ok = await create_calendar_event(reminder_text, run_at)
+
     display_dt = run_at.strftime("%d/%m/%Y เวลา %H:%M น.")
-    await reply_line(reply_token, f"✅ ตั้งเตือนแล้วครับ\n📌 {reminder_text}\n🕐 {display_dt}")
+    cal_text   = "\n📅 บันทึกใน Google Calendar แล้ว" if cal_ok else ""
+    await reply_line(reply_token,
+        f"✅ ตั้งเตือนแล้วครับ\n📌 {reminder_text}\n🕐 {display_dt}{cal_text}")
     logger.info(f"Reminder set: [{reminder_text}] at {run_at}")
 
 
@@ -324,7 +369,6 @@ async def callback(request: Request):
 
         logger.info(f"event={event_type} source={source_type} msg_type={msg_type}")
 
-        # ── บอทเข้ากลุ่ม ──
         if event_type == "join":
             await reply_line(reply_token,
                 f"สวัสดีครับ! พิมพ์ '{BOT_KEYWORD}' นำหน้าเพื่อถามผมได้เลยครับ\n"
@@ -338,7 +382,6 @@ async def callback(request: Request):
         if not reply_token:
             continue
 
-        # ── รูป / วิดีโอ / เสียง / ไฟล์ → บันทึก ──
         if msg_type in ("image", "video", "audio", "file"):
             await handle_media(event)
             continue
@@ -348,7 +391,6 @@ async def callback(request: Request):
 
         user_text = event["message"]["text"].strip()
 
-        # ── กลุ่ม: ต้องขึ้นต้นด้วย "บอท" ──
         if source_type == "group":
             if not user_text.lower().startswith(BOT_KEYWORD.lower()):
                 continue
@@ -360,14 +402,12 @@ async def callback(request: Request):
                     f"• {BOT_KEYWORD} เตือน [เรื่อง] [วัน/เวลา]")
                 continue
 
-        # ── คำสั่งเตือนความจำ ──
         if user_text.startswith("เตือน"):
             remind_text = user_text[len("เตือน"):].strip()
-            target_id = source.get("groupId") or source.get("userId", "")
+            target_id   = source.get("groupId") or source.get("userId", "")
             await parse_and_set_reminder(remind_text, target_id, reply_token)
             continue
 
-        # ── ถาม AI ──
         try:
             answer = await ask_claude(user_text)
         except Exception as e:
@@ -381,10 +421,10 @@ async def callback(request: Request):
 
 @app.get("/")
 async def root():
-    pending = scheduler.get_jobs()
+    pending      = scheduler.get_jobs()
     remind_count = sum(1 for j in pending if j.id.startswith("remind_"))
     return {
-        "status": "running",
-        "files_today": sum(len(v) for v in daily_log.values()),
+        "status":            "running",
+        "files_today":       sum(len(v) for v in daily_log.values()),
         "pending_reminders": remind_count,
     }
