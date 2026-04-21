@@ -13,15 +13,37 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
-ACCESS_TOKEN   = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-
-# Make.com Webhook URL สำหรับบันทึก Microsoft To Do
-MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "")
+CHANNEL_SECRET   = os.getenv("LINE_CHANNEL_SECRET", "")
+ACCESS_TOKEN     = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+MAKE_WEBHOOK_URL  = os.getenv("MAKE_WEBHOOK_URL", "")
 
 SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบคำถามเกี่ยวกับการผลิต ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
 BOT_KEYWORD   = "บอท"
+
+
+# ══════════════════════════════════════════════════════════════
+# Claude (Anthropic) helper
+# ══════════════════════════════════════════════════════════════
+
+async def ask_claude(user_message: str) -> str:
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key":         ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type":      "application/json",
+    }
+    payload = {
+        "model":      "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "system":     SYSTEM_PROMPT,
+        "messages":   [{"role": "user", "content": user_message}],
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["content"][0]["text"]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -29,11 +51,7 @@ BOT_KEYWORD   = "บอท"
 # ══════════════════════════════════════════════════════════════
 
 async def send_to_make(task_title: str, user_id: str = ""):
-    """ส่งข้อมูลไปที่ Make.com → Make บันทึกลง Microsoft To Do"""
-    payload = {
-        "title":   task_title,
-        "user_id": user_id,
-    }
+    payload = {"title": task_title, "user_id": user_id}
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(MAKE_WEBHOOK_URL, json=payload)
         resp.raise_for_status()
@@ -52,22 +70,6 @@ def verify_signature(body: bytes, signature: str) -> bool:
     ).digest()
     expected = base64.b64encode(digest).decode("utf-8")
     return hmac.compare_digest(expected, signature)
-
-
-async def ask_gemini(user_message: str) -> str:
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    )
-    payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [{"parts": [{"text": user_message}]}]
-    }
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 async def reply_line(reply_token: str, text: str):
@@ -127,14 +129,14 @@ async def callback(request: Request):
                 continue
             user_text = user_text[len(BOT_KEYWORD):].strip()
             if not user_text:
-                await reply_line(reply_token, f"มีอะไรให้ช่วยครับ?")
+                await reply_line(reply_token, "มีอะไรให้ช่วยครับ?")
                 continue
 
-        # ── บันทึก To Do ผ่าน Make.com ───────────────────────
+        # ── บันทึก Outlook Tasks ผ่าน Make.com ───────────────
         if user_text.startswith("บันทึก "):
             task_title = user_text.replace("บันทึก ", "").strip()
             if not task_title:
-                await reply_line(reply_token, "กรุณาระบุชื่องานด้วยครับ เช่น 'บันทึก ตรวจสอบสายการผลิต A'")
+                await reply_line(reply_token, "กรุณาระบุชื่องานด้วยครับ\nเช่น 'บันทึก ตรวจสอบสายการผลิต A'")
                 continue
             try:
                 await send_to_make(task_title, user_id)
@@ -147,10 +149,11 @@ async def callback(request: Request):
                 await reply_line(reply_token, "บันทึกไม่สำเร็จครับ ลองใหม่อีกครั้งนะครับ")
             continue
 
-        # ── ถาม AI ────────────────────────────────────────────
+        # ── ถาม Claude AI ─────────────────────────────────────
         try:
-            answer = await ask_gemini(user_text)
+            answer = await ask_claude(user_text)
         except Exception as e:
+            logger.error(f"Claude error: {e}")
             if "429" in str(e):
                 answer = "ขออภัยครับ ระบบ AI ยุ่งอยู่ รอสักครู่แล้วลองใหม่นะครับ"
             else:
