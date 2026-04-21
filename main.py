@@ -18,7 +18,7 @@ ACCESS_TOKEN     = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 MAKE_WEBHOOK_URL  = os.getenv("MAKE_WEBHOOK_URL", "")
 
-SYSTEM_PROMPT = "คุณคือ AI assistant ประจำโรงงาน ตอบคำถามเกี่ยวกับการผลิต ตอบภาษาไทย กระชับ ไม่เกิน 3-4 ประโยค"
+SYSTEM_PROMPT = "คุณชื่อ Metro คือ AI assistant ประจำโรงงาน ตอบคำถามเกี่ยวกับการผลิต ตอบภาษาไทย ใช้คำลงท้ายว่า 'ครับ' เสมอ กระชับ ไม่เกิน 3-4 ประโยค เมื่อทักทายให้แนะนำตัวว่า 'สวัสดีครับ ผม Metro AI assistant มีอะไรให้ช่วยครับ'"
 BOT_KEYWORD   = "บอท"
 
 
@@ -108,9 +108,10 @@ async def callback(request: Request):
 
         if event_type == "join":
             msg = (
-                f"สวัสดีครับ! 👋\n"
-                f"พิมพ์ '{BOT_KEYWORD}' นำหน้าเพื่อถามผมได้เลย\n"
-                f"พิมพ์ '{BOT_KEYWORD} บันทึก ...' เพื่อบันทึกงานลง Outlook Tasks"
+                f"สวัสดีครับ ผม Metro AI assistant\n"
+                f"มีอะไรให้ช่วยครับ?\n\n"
+                f"พิมพ์ '{BOT_KEYWORD}' นำหน้าเพื่อถามผมได้เลยครับ\n"
+                f"เช่น '{BOT_KEYWORD} สายการผลิตมีปัญหา ทำยังไงดี'"
             )
             await reply_line(reply_token, msg)
             continue
