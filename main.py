@@ -281,7 +281,13 @@ async def callback(request: Request):
                 continue
 
         # ── ดูรายการแจ้งเตือน ────────────────────────────────
-        if user_text in ("ดูเตือน", "รายการเตือน", "เตือนอะไรบ้าง"):
+        REMIND_LIST_KEYWORDS = (
+            "ดูเตือน", "รายการเตือน", "เตือนอะไรบ้าง",
+            "มีแจ้งเตือนอะไรบ้าง", "แจ้งเตือนอะไรบ้าง",
+            "ดูแจ้งเตือน", "มีเตือนอะไรบ้าง", "เตือนมีอะไรบ้าง",
+            "มีอะไรเตือนบ้าง", "รายการแจ้งเตือน",
+        )
+        if any(user_text == kw or user_text.startswith(kw) for kw in REMIND_LIST_KEYWORDS):
             await list_reminders(target_id, reply_token)
             continue
 
