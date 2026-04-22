@@ -4,15 +4,19 @@ import hmac
 import base64
 import json
 import logging
+import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
+import requests as req_lib
 from fastapi import FastAPI, Request, Response
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request as GRequest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,6 +27,8 @@ CHANNEL_SECRET    = os.getenv("LINE_CHANNEL_SECRET", "")
 ACCESS_TOKEN      = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 MAKE_WEBHOOK_URL  = os.getenv("MAKE_WEBHOOK_URL", "")
+GOOGLE_SA_JSON    = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+CALENDAR_ID       = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 
 SYSTEM_PROMPT = (
     "คุณชื่อ Metro คือ AI assistant ประจำโรงงาน ตอบภาษาไทย "
@@ -73,6 +79,52 @@ async def ask_claude(user_message: str, system: str = SYSTEM_PROMPT) -> str:
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         return resp.json()["content"][0]["text"]
+
+
+# ══════════════════════════════════════════════════════════════
+# Google Calendar helper
+# ══════════════════════════════════════════════════════════════
+
+def _get_google_token() -> str | None:
+    if not GOOGLE_SA_JSON:
+        return None
+    try:
+        info  = json.loads(GOOGLE_SA_JSON)
+        creds = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+        creds.refresh(GRequest(session=req_lib.Session()))
+        return creds.token
+    except Exception as e:
+        logger.error(f"Google token error: {e}")
+        return None
+
+
+async def create_calendar_event(summary: str, run_at: datetime) -> bool:
+    token = await asyncio.get_event_loop().run_in_executor(None, _get_google_token)
+    if not token:
+        logger.warning("Google Calendar: ไม่มี token")
+        return False
+    end_at  = run_at + timedelta(minutes=30)
+    event   = {
+        "summary": f"🔔 {summary}",
+        "start":   {"dateTime": run_at.isoformat(), "timeZone": "Asia/Bangkok"},
+        "end":     {"dateTime": end_at.isoformat(), "timeZone": "Asia/Bangkok"},
+        "reminders": {
+            "useDefault": False,
+            "overrides":  [{"method": "popup", "minutes": 10}],
+        },
+    }
+    url     = f"https://www.googleapis.com/calendar/v3/calendars/{CALENDAR_ID}/events"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(url, headers=headers, json=event)
+        if r.status_code in (200, 201):
+            logger.info(f"Calendar event created: {summary}")
+            return True
+        logger.error(f"Calendar error {r.status_code}: {r.text}")
+        return False
 
 
 # ══════════════════════════════════════════════════════════════
@@ -209,22 +261,47 @@ async def set_reminder(remind_text: str, target_id: str, reply_token: str):
                      "text": reminder_text, "run_at": run_at.isoformat()})
     _save_file(existing)
 
+    # บันทึกใน Google Calendar
+    cal_ok = await create_calendar_event(reminder_text, run_at)
+
     display_dt = run_at.strftime("%d/%m/%Y เวลา %H:%M น.")
+    cal_text   = "\n📅 บันทึกใน Google Calendar แล้วครับ" if cal_ok else ""
     await reply_line(reply_token,
-        f"✅ ตั้งเตือนแล้วครับ\n📌 {reminder_text}\n🕐 {display_dt}")
+        f"✅ ตั้งเตือนแล้วครับ\n📌 {reminder_text}\n🕐 {display_dt}{cal_text}")
     logger.info(f"Reminder set: [{reminder_text}] at {run_at}")
 
 
 async def list_reminders(target_id: str, reply_token: str):
-    """แสดงรายการ reminder ที่ยังรออยู่"""
-    pending = [r for r in _load_file() if r["target_id"] == target_id]
+    """แสดงรายการ reminder ที่ยังรออยู่ จัดกลุ่มตามวัน"""
+    now     = datetime.now(TZ)
+    today   = now.date()
+    pending = sorted(
+        [r for r in _load_file() if r["target_id"] == target_id],
+        key=lambda r: r["run_at"]
+    )
     if not pending:
         await reply_line(reply_token, "ไม่มีการแจ้งเตือนที่รออยู่ครับ")
         return
-    lines = ["📋 รายการแจ้งเตือนที่ตั้งไว้ครับ:"]
-    for i, r in enumerate(pending, 1):
-        dt = datetime.fromisoformat(r["run_at"]).strftime("%d/%m/%Y %H:%M")
-        lines.append(f"{i}. {r['text']} — {dt}")
+
+    # จัดกลุ่มตามวัน
+    groups: dict[str, list] = {}
+    for r in pending:
+        run_at = datetime.fromisoformat(r["run_at"])
+        d      = run_at.date()
+        if d == today:
+            label = "📅 วันนี้"
+        elif d == today.replace(day=today.day + 1) or (run_at - now).days < 1:
+            label = "📅 พรุ่งนี้"
+        else:
+            label = f"📅 {run_at.strftime('%d/%m/%Y')}"
+        groups.setdefault(label, []).append((run_at, r["text"]))
+
+    lines = ["🔔 รายการแจ้งเตือนที่ตั้งไว้ครับ:"]
+    for label, items in groups.items():
+        lines.append(f"\n{label}")
+        for run_at, text in items:
+            lines.append(f"  • {run_at.strftime('%H:%M')} น. — {text}")
+
     await reply_line(reply_token, "\n".join(lines))
 
 
@@ -283,11 +360,13 @@ async def callback(request: Request):
         # ── ดูรายการแจ้งเตือน ────────────────────────────────
         REMIND_LIST_KEYWORDS = (
             "ดูเตือน", "รายการเตือน", "เตือนอะไรบ้าง",
-            "มีแจ้งเตือนอะไรบ้าง", "แจ้งเตือนอะไรบ้าง",
-            "ดูแจ้งเตือน", "มีเตือนอะไรบ้าง", "เตือนมีอะไรบ้าง",
-            "มีอะไรเตือนบ้าง", "รายการแจ้งเตือน",
+            "มีแจ้งเตือน", "แจ้งเตือนอะไร", "แจ้งเตือนมีอะไร",
+            "ดูแจ้งเตือน", "มีเตือนอะไร", "เตือนมีอะไร",
+            "มีอะไรเตือน", "รายการแจ้งเตือน", "มีนัดอะไร",
+            "พรุ่งนี้มี", "วันนี้มีอะไร", "มีกำหนดการ",
+            "เตือนพรุ่งนี้", "แจ้งเตือนพรุ่งนี้", "นัดพรุ่งนี้",
         )
-        if any(user_text == kw or user_text.startswith(kw) for kw in REMIND_LIST_KEYWORDS):
+        if any(kw in user_text for kw in REMIND_LIST_KEYWORDS):
             await list_reminders(target_id, reply_token)
             continue
 
