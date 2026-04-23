@@ -13,8 +13,6 @@ from zoneinfo import ZoneInfo
 import httpx
 import requests as req_lib
 from fastapi import FastAPI, Request, Response
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.date import DateTrigger
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request as GRequest
 
@@ -39,23 +37,7 @@ SYSTEM_PROMPT = (
 BOT_KEYWORD    = "บอท"
 REMINDERS_FILE = Path("./reminders.json")
 
-scheduler = AsyncIOScheduler(timezone=TZ)
-
-
-# ══════════════════════════════════════════════════════════════
-# Lifespan
-# ══════════════════════════════════════════════════════════════
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    load_saved_reminders()
-    scheduler.start()
-    logger.info("Scheduler started")
-    yield
-    scheduler.shutdown()
-
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -186,34 +168,21 @@ def _save_file(reminders: list[dict]):
     )
 
 
-def load_saved_reminders():
-    """โหลด reminder ที่ยังไม่ถึงเวลาจากไฟล์ กลับเข้า scheduler"""
+async def check_and_fire_reminders():
+    """เช็ค reminder ที่ถึงเวลาแล้ว แล้วส่งเตือน (เรียกจาก /cron ทุก 1 นาที)"""
     now  = datetime.now(TZ)
-    kept = []
-    for r in _load_file():
+    all_r = _load_file()
+    kept  = []
+    for r in all_r:
         run_at = datetime.fromisoformat(r["run_at"])
-        if run_at > now:
-            _add_job(r["job_id"], r["target_id"], r["text"], run_at)
+        if run_at <= now:
+            # ถึงเวลาแล้ว — ส่งเตือน
+            await push_line(r["target_id"], f"🔔 เตือนความจำ\n{r['text']}")
+            logger.info(f"Fired reminder: {r['text']}")
+        else:
             kept.append(r)
-    _save_file(kept)
-    logger.info(f"Loaded {len(kept)} pending reminders")
-
-
-def _add_job(job_id: str, target_id: str, text: str, run_at: datetime):
-    scheduler.add_job(
-        _fire_reminder,
-        DateTrigger(run_date=run_at, timezone=TZ),
-        args=[job_id, target_id, text],
-        id=job_id,
-        replace_existing=True,
-    )
-
-
-async def _fire_reminder(job_id: str, target_id: str, text: str):
-    """ส่งข้อความเตือน และลบออกจากไฟล์"""
-    await push_line(target_id, f"🔔 เตือนความจำ\n{text}")
-    reminders = [r for r in _load_file() if r["job_id"] != job_id]
-    _save_file(reminders)
+    if len(kept) != len(all_r):
+        _save_file(kept)
 
 
 async def set_reminder(remind_text: str, target_id: str, reply_token: str):
@@ -267,7 +236,8 @@ async def set_reminder(remind_text: str, target_id: str, reply_token: str):
     display_dt = run_at.strftime("%d/%m/%Y เวลา %H:%M น.")
     cal_text   = "\n📅 บันทึกใน Google Calendar แล้วครับ" if cal_ok else ""
     await reply_line(reply_token,
-        f"✅ ตั้งเตือนแล้วครับ\n📌 {reminder_text}\n🕐 {display_dt}{cal_text}")
+        f"✅ ตั้งเตือนแล้วครับ\n📌 {reminder_text}\n🕐 {display_dt}{cal_text}\n"
+        f"⏰ บอทจะแจ้งเตือนตรงเวลาครับ")
     logger.info(f"Reminder set: [{reminder_text}] at {run_at}")
 
 
@@ -409,10 +379,18 @@ async def callback(request: Request):
     return Response(content="ok", status_code=200)
 
 
+@app.get("/cron")
+async def cron():
+    """cron-job.org ยิงทุก 1 นาที เพื่อเช็คและส่ง reminder"""
+    await check_and_fire_reminders()
+    pending = len(_load_file())
+    logger.info(f"Cron tick — pending reminders: {pending}")
+    return {"status": "ok", "pending": pending}
+
+
 @app.get("/")
 async def root():
-    pending = scheduler.get_jobs()
     return {
         "status":            "running",
-        "pending_reminders": sum(1 for j in pending if j.id.startswith("remind_")),
+        "pending_reminders": len(_load_file()),
     }
